@@ -202,6 +202,19 @@ def get_latest_narrative(sector_id: str) -> dict | None:
     return res.data[0] if res.data else None
 
 
+def clear_pipeline_data() -> dict:
+    """Delete all signals, articles, and narratives for a fresh pipeline run."""
+    client = get_client()
+    sig = client.table("sector_signals").delete().neq("id", "").execute()
+    art = client.table("sector_articles").delete().neq("id", "").execute()
+    nar = client.table("sector_narratives").delete().neq("id", "").execute()
+    return {
+        "signals_deleted": len(sig.data),
+        "articles_deleted": len(art.data),
+        "narratives_deleted": len(nar.data),
+    }
+
+
 def get_all_latest_narratives() -> dict[str, dict]:
     """Get the latest narrative for each sector. Returns dict keyed by sector_id."""
     res = (

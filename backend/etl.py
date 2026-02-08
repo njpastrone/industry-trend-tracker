@@ -548,6 +548,13 @@ def run_pipeline() -> dict:
     logger.info("Pipeline started")
     start = datetime.now(timezone.utc)
 
+    # Clear old data so dashboard always shows fresh results
+    logger.info("Clearing old pipeline data...")
+    clear_stats = db.clear_pipeline_data()
+    logger.info(f"  Cleared {clear_stats['articles_deleted']} articles, "
+                f"{clear_stats['signals_deleted']} signals, "
+                f"{clear_stats['narratives_deleted']} narratives")
+
     sectors = db.get_sectors()
     sector_stats = []
 
