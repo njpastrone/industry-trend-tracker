@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getInitData, runPipeline } from "../api/client";
-import type { TimeWindow, SignalType } from "../types";
+import type { TimeWindow, SignalType, ViewType } from "../types";
 import SectorGrid from "../components/SectorGrid";
+import SectorList from "../components/SectorList";
 import Filters from "../components/Filters";
 import { formatRelativeTime } from "../utils/format";
 
@@ -33,6 +34,30 @@ function SkeletonGrid() {
   );
 }
 
+function SkeletonList() {
+  return (
+    <div className="animate-pulse overflow-hidden rounded-lg border border-blue-100 bg-white">
+      <div className="border-b border-gray-200 px-4 py-3">
+        <div className="h-4 w-full rounded bg-gray-100" />
+      </div>
+      {Array.from({ length: 11 }).map((_, i) => (
+        <div
+          key={i}
+          className="flex items-center gap-4 border-b border-gray-100 px-4 py-3 last:border-b-0"
+        >
+          <div className="flex-1">
+            <div className="mb-1 h-4 w-28 rounded bg-gray-200" />
+            <div className="h-3 w-12 rounded bg-gray-100" />
+          </div>
+          <div className="h-4 w-16 rounded bg-gray-100" />
+          <div className="h-4 w-14 rounded bg-gray-100" />
+          <div className="h-4 w-14 rounded bg-gray-100" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const queryClient = useQueryClient();
 
@@ -46,6 +71,11 @@ export default function Dashboard() {
     return (localStorage.getItem("signalType") as SignalType | "all") || "all";
   });
 
+  const [viewType, setViewType] = useState<ViewType>(() => {
+    const stored = localStorage.getItem("viewType");
+    return stored === "list" ? "list" : "grid";
+  });
+
   useEffect(() => {
     localStorage.setItem("timeWindow", String(timeWindow));
   }, [timeWindow]);
@@ -53,6 +83,10 @@ export default function Dashboard() {
   useEffect(() => {
     localStorage.setItem("signalType", signalType);
   }, [signalType]);
+
+  useEffect(() => {
+    localStorage.setItem("viewType", viewType);
+  }, [viewType]);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["initData", timeWindow],
@@ -108,10 +142,12 @@ export default function Dashboard() {
             onTimeWindowChange={setTimeWindow}
             signalType={signalType}
             onSignalTypeChange={setSignalType}
+            viewType={viewType}
+            onViewTypeChange={setViewType}
           />
         </div>
 
-        {isLoading && <SkeletonGrid />}
+        {isLoading && (viewType === "grid" ? <SkeletonGrid /> : <SkeletonList />)}
 
         {isError && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-center text-red-700">
@@ -119,7 +155,13 @@ export default function Dashboard() {
           </div>
         )}
 
-        {data && <SectorGrid sectors={data.sectors} />}
+        {data && (
+          viewType === "grid" ? (
+            <SectorGrid sectors={data.sectors} />
+          ) : (
+            <SectorList sectors={data.sectors} />
+          )
+        )}
       </main>
     </div>
   );

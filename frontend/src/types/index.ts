@@ -145,3 +145,4 @@ export const SENTIMENT_CONFIG: Record<
 
 export const TIME_WINDOW_OPTIONS = [7, 14, 30] as const;
 export type TimeWindow = (typeof TIME_WINDOW_OPTIONS)[number];
+export type ViewType = "grid" | "list";
