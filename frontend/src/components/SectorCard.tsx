@@ -42,7 +42,7 @@ export default function SectorCard({ sector }: { sector: SectorWithMetrics }) {
         </span>
       </div>
 
-      <p className="line-clamp-2 text-sm text-gray-600">{summary}</p>
+      <p className="line-clamp-3 text-sm text-gray-600">{summary}</p>
     </div>
   );
 }
