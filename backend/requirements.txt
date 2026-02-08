@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+supabase
+anthropic
+httpx
+yfinance
+python-dotenv
+feedparser
