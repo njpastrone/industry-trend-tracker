@@ -205,9 +205,11 @@ def get_latest_narrative(sector_id: str) -> dict | None:
 def clear_pipeline_data() -> dict:
     """Delete all signals, articles, and narratives for a fresh pipeline run."""
     client = get_client()
-    sig = client.table("sector_signals").delete().neq("id", "").execute()
-    art = client.table("sector_articles").delete().neq("id", "").execute()
-    nar = client.table("sector_narratives").delete().neq("id", "").execute()
+    # Use gte with nil UUID to match all rows (PostgREST requires a filter for DELETE)
+    nil_uuid = "00000000-0000-0000-0000-000000000000"
+    sig = client.table("sector_signals").delete().gte("id", nil_uuid).execute()
+    art = client.table("sector_articles").delete().gte("id", nil_uuid).execute()
+    nar = client.table("sector_narratives").delete().gte("id", nil_uuid).execute()
     return {
         "signals_deleted": len(sig.data),
         "articles_deleted": len(art.data),
