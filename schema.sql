@@ -74,6 +74,7 @@ CREATE TABLE sector_narratives (
     summary_short TEXT,
     summary_full TEXT,
     key_themes TEXT[],
+    ir_talking_points TEXT[],
     sentiment TEXT,
     signal_count INT,
     created_at TIMESTAMPTZ DEFAULT NOW()

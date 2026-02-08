@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import anthropic
 import feedparser
@@ -65,6 +65,7 @@ def fetch_feed_articles(feed: dict, sector_id: str) -> list[dict]:
 
     parsed = feedparser.parse(resp.text)
     articles = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
 
     for entry in parsed.entries[:ARTICLES_PER_FEED]:
         # Google News RSS: title often ends with " - Source Name"
@@ -85,6 +86,17 @@ def fetch_feed_articles(feed: dict, sector_id: str) -> list[dict]:
                 published_at = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).isoformat()
             except (ValueError, TypeError):
                 pass
+
+        # Date filter: discard articles older than 7 days (safety net for when:7d)
+        if published_at:
+            try:
+                pub_dt = datetime.fromisoformat(published_at)
+                if pub_dt < cutoff:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        else:
+            logger.debug(f"Article has no published_at, keeping: {title[:80]}")
 
         articles.append({
             "sector_id": sector_id,
@@ -107,7 +119,8 @@ _SECTOR_KEYWORDS = re.compile(
     r"\b(sector|industry|industries|market|markets|regulation|regulatory|policy|"
     r"across|widespread|multiple|wave|trend|downgrade|upgrade|analyst|index|"
     r"benchmark|etf|outlook|forecast|tariff|trade war|antitrust|merger wave|"
-    r"layoffs|hiring|strike)\b",
+    r"layoffs|hiring|strike|federal reserve|fed |interest rate|inflation|"
+    r"bipartisan|legislation|mandate|compliance|sector-wide|industrywide)\b",
     re.IGNORECASE,
 )
 
@@ -115,9 +128,28 @@ _SECTOR_KEYWORDS = re.compile(
 _COMPANY_PATTERNS = re.compile(
     r"\b(reports earnings|beats estimates|misses estimates|quarterly results|"
     r"revenue (rises|falls|surges|drops)|stock (rises|falls|surges|drops|jumps|plunges)|"
-    r"shares (rise|fall|surge|drop|jump|plunge)|CEO|CFO|appoints|names|hires|fires|"
+    r"shares (rise|fall|surge|drop|jump|plunge|of )|CEO|CFO|CTO|COO|appoints|names|hires|fires|"
     r"IPO filing|stock buyback|dividend (hike|cut)|price target|"
-    r"launches product|unveils|announces partnership)\b",
+    r"launches product|unveils|announces partnership|announces deal|"
+    r"acquires|to acquire|buys|to buy|agreed to|signs deal|"
+    r"rated buy|rated sell|rated hold|rated overweight|rated underweight)\b",
+    re.IGNORECASE,
+)
+
+# Ticker pattern: $AAPL, $TSLA, etc.
+_TICKER_PATTERN = re.compile(r"\$[A-Z]{1,5}\b")
+
+# Major company names that frequently pollute sector feeds
+_MAJOR_COMPANIES = re.compile(
+    r"\b(Apple|Google|Alphabet|Tesla|Amazon|Microsoft|Meta|Facebook|Netflix|Nvidia|"
+    r"AMD|Intel|Qualcomm|Broadcom|Salesforce|Adobe|Oracle|Cisco|IBM|"
+    r"JPMorgan|Goldman Sachs|Morgan Stanley|Bank of America|Citigroup|Wells Fargo|"
+    r"ExxonMobil|Chevron|ConocoPhillips|Shell|BP|"
+    r"Johnson & Johnson|Pfizer|Merck|AbbVie|UnitedHealth|Eli Lilly|"
+    r"Walmart|Target|Costco|Home Depot|McDonald's|Starbucks|Nike|"
+    r"Disney|Comcast|AT&T|Verizon|T-Mobile|"
+    r"Boeing|Lockheed Martin|Caterpillar|3M|Honeywell|"
+    r"Berkshire|Visa|Mastercard|PayPal)\b",
     re.IGNORECASE,
 )
 
@@ -126,15 +158,29 @@ def _is_single_company_news(title: str) -> bool:
     """Return True if headline is about a single company, not sector-level."""
     has_sector_keyword = bool(_SECTOR_KEYWORDS.search(title))
     has_company_pattern = bool(_COMPANY_PATTERNS.search(title))
-    # If it has company patterns but NO sector keywords, it's single-company news
-    return has_company_pattern and not has_sector_keyword
+    has_ticker = bool(_TICKER_PATTERN.search(title))
+    has_major_company = bool(_MAJOR_COMPANIES.search(title))
+
+    # Ticker mention without sector keywords = single-company
+    if has_ticker and not has_sector_keyword:
+        return True
+    # Company patterns without sector keywords = single-company
+    if has_company_pattern and not has_sector_keyword:
+        return True
+    # Major company name + company pattern (even with sector keywords) = likely single-company
+    if has_major_company and has_company_pattern:
+        return True
+    # Major company name without sector keywords = single-company
+    if has_major_company and not has_sector_keyword:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
 # 3. Batch Classification
 # ---------------------------------------------------------------------------
 
-def _classify_batch(batch: list[dict], sector_name: str) -> list[dict]:
+def _classify_batch(batch: list[dict], sector_name: str, today_date: str | None = None) -> list[dict]:
     """Classify a batch of articles (up to BATCH_SIZE) with Claude Haiku."""
     headlines_block = "\n".join(
         f"[{i}] {a['title']}" for i, a in enumerate(batch)
@@ -142,6 +188,7 @@ def _classify_batch(batch: list[dict], sector_name: str) -> list[dict]:
     prompt = BATCH_CLASSIFICATION_PROMPT.format(
         sector_name=sector_name,
         headlines_block=headlines_block,
+        today_date=today_date or date.today().isoformat(),
     )
 
     try:
@@ -164,19 +211,20 @@ def _classify_batch(batch: list[dict], sector_name: str) -> list[dict]:
         return []
 
 
-def _classify_single(article: dict, sector_name: str) -> dict | None:
+def _classify_single(article: dict, sector_name: str, today_date: str | None = None) -> dict | None:
     """Fallback: classify a single article if batch fails."""
-    results = _classify_batch([article], sector_name)
+    results = _classify_batch([article], sector_name, today_date=today_date)
     return results[0] if results else None
 
 
 def batch_classify(articles: list[dict], sector_name: str) -> list[dict]:
     """Classify articles in batches of BATCH_SIZE. Returns signal dicts ready for DB."""
     signals = []
+    today_date = date.today().isoformat()
 
     for i in range(0, len(articles), BATCH_SIZE):
         batch = articles[i : i + BATCH_SIZE]
-        results = _classify_batch(batch, sector_name)
+        results = _classify_batch(batch, sector_name, today_date=today_date)
 
         if results:
             # Map results back to articles by headline_index
@@ -207,7 +255,7 @@ def batch_classify(articles: list[dict], sector_name: str) -> list[dict]:
         else:
             # Fallback: classify individually
             for article in batch:
-                result = _classify_single(article, sector_name)
+                result = _classify_single(article, sector_name, today_date=today_date)
                 if result:
                     signal_type = result.get("signal_type", "neutral")
                     sentiment = result.get("sentiment", "neutral")
@@ -318,7 +366,7 @@ def _calc_ticker_changes(data, ticker: str) -> dict | None:
 # 5. Narratives
 # ---------------------------------------------------------------------------
 
-def generate_narrative(sector: dict, signals: list[dict], financials: dict | None) -> dict | None:
+def generate_narrative(sector: dict, signals: list[dict], financials: dict | None, today_date: str | None = None) -> dict | None:
     """Generate a narrative for one sector from its top signals."""
     if not signals:
         return None
@@ -338,6 +386,7 @@ def generate_narrative(sector: dict, signals: list[dict], financials: dict | Non
         price_change_7d=f"{fin.get('price_change_7d', 0):.1f}%" if fin.get("price_change_7d") is not None else "N/A",
         price_change_30d=f"{fin.get('price_change_30d', 0):.1f}%" if fin.get("price_change_30d") is not None else "N/A",
         vs_spy_30d=f"{fin.get('vs_spy_30d', 0):.1f}%" if fin.get("vs_spy_30d") is not None else "N/A",
+        today_date=today_date or date.today().isoformat(),
     )
 
     try:
@@ -358,6 +407,7 @@ def generate_narrative(sector: dict, signals: list[dict], financials: dict | Non
             "summary_short": data.get("summary_short", ""),
             "summary_full": data.get("summary_full", ""),
             "key_themes": data.get("key_themes", []),
+            "ir_talking_points": data.get("ir_talking_points", []),
             "sentiment": data.get("sentiment", "neutral"),
             "signal_count": len(signals),
         }
@@ -367,29 +417,42 @@ def generate_narrative(sector: dict, signals: list[dict], financials: dict | Non
         return None
 
 
+def _generate_narrative_for_sector(sector: dict, all_financials: dict, today_date: str) -> bool:
+    """Helper for parallel narrative generation. Returns True if narrative was generated."""
+    signals = db.get_sector_signals(sector["id"], days=7, min_relevance=0.2)
+    top_signals = sorted(
+        [s for s in signals if s.get("signal_type") != "neutral"],
+        key=lambda s: s.get("ir_relevance", 0),
+        reverse=True,
+    )[:10]
+
+    if not top_signals:
+        logger.info(f"No relevant signals for {sector['name']}, skipping narrative")
+        return False
+
+    financials = all_financials.get(sector["id"])
+    result = generate_narrative(sector, top_signals, financials, today_date=today_date)
+    return result is not None
+
+
 def generate_all_narratives(sectors: list[dict]) -> int:
-    """Generate narratives for all sectors. Returns count generated."""
-    generated = 0
+    """Generate narratives for all sectors in parallel. Returns count generated."""
     all_financials = {f["sector_id"]: f for f in db.get_all_financials()}
+    today_date = date.today().isoformat()
+    generated = 0
 
-    for sector in sectors:
-        # Get top signals for this sector (non-neutral, sorted by relevance)
-        signals = db.get_sector_signals(sector["id"], days=7, min_relevance=0.2)
-        # Filter out neutral and sort by relevance
-        top_signals = sorted(
-            [s for s in signals if s.get("signal_type") != "neutral"],
-            key=lambda s: s.get("ir_relevance", 0),
-            reverse=True,
-        )[:10]
-
-        if not top_signals:
-            logger.info(f"No relevant signals for {sector['name']}, skipping narrative")
-            continue
-
-        financials = all_financials.get(sector["id"])
-        result = generate_narrative(sector, top_signals, financials)
-        if result:
-            generated += 1
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(_generate_narrative_for_sector, sector, all_financials, today_date): sector
+            for sector in sectors
+        }
+        for future in as_completed(futures):
+            sector = futures[future]
+            try:
+                if future.result():
+                    generated += 1
+            except Exception as e:
+                logger.error(f"Narrative generation failed for {sector['name']}: {e}")
 
     return generated
 
@@ -432,6 +495,13 @@ def process_sector(sector: dict) -> dict:
         if url not in existing_urls and url not in seen_urls:
             seen_urls.add(url)
             new_articles.append(article)
+
+    # Pre-filter: remove single-company news before DB insert (saves DB space + API budget)
+    pre_filter_count = len(new_articles)
+    new_articles = [a for a in new_articles if not _is_single_company_news(a["title"])]
+    filtered_out = pre_filter_count - len(new_articles)
+    if filtered_out > 0:
+        logger.info(f"  {sector_name}: pre-filtered {filtered_out} single-company articles")
 
     stats["new"] = len(new_articles)
 
@@ -498,7 +568,7 @@ def run_pipeline() -> dict:
     logger.info("Refreshing financials...")
     financials_updated = refresh_sector_financials(sectors)
 
-    # Narratives (sequential, one Claude call per sector)
+    # Narratives (parallel, one Claude call per sector)
     logger.info("Generating narratives...")
     narratives_generated = generate_all_narratives(sectors)
 

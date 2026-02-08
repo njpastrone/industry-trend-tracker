@@ -27,6 +27,7 @@ export interface SectorNarrative {
   summary_short: string | null;
   summary_full: string | null;
   key_themes: string[] | null;
+  ir_talking_points: string[] | null;
   sentiment: string | null;
   signal_count: number | null;
   created_at: string;

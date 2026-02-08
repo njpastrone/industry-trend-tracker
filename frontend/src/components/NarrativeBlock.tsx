@@ -61,6 +61,25 @@ export default function NarrativeBlock({ narrative }: Props) {
           {narrative.summary_short ?? "No narrative text available."}
         </p>
       )}
+
+      {narrative.ir_talking_points && narrative.ir_talking_points.length > 0 && (
+        <div className="mt-4 rounded-md bg-blue-50 p-3">
+          <h4 className="mb-2 text-xs font-semibold text-blue-900">
+            IR Talking Points
+          </h4>
+          <ul className="space-y-1.5">
+            {narrative.ir_talking_points.map((point, i) => (
+              <li
+                key={i}
+                className="flex items-start gap-2 text-sm text-blue-800"
+              >
+                <span className="mt-1.5 h-1 w-1 flex-shrink-0 rounded-full bg-blue-400" />
+                {point}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
